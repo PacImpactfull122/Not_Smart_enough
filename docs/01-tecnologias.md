@@ -1,0 +1,97 @@
+# Tecnologias
+
+Stack proposta para o rewrite em C/C++20/23. Cada item traz o motivo concreto e a alternativa descartada, para evitar escolha por moda.
+
+## Nucleo
+
+| Area | Escolha | Motivo | Alternativa descartada |
+| --- | --- | --- | --- |
+| Linguagem | C++20/23 | RAII para lifetime de memoria e handle, `std::jthread`, coroutines para I/O assincrono sem callback hell | C puro: exigiria reimplementar abstracoes de container e tipo |
+| Build | CMake + Ninja | Padrao, suporta fetch de dependencias e cross-compile | Bazel: custo de configuracao alto para equipe pequena |
+| Formato | clang-format (LLVM style com ajuste local) | Consistencia automatica | Formatacao manual |
+| Testes | GoogleTest + sanitizers (ASan/UBSan/TSan) | Testes unitarios e deteccao de race no codigo concorrente | framework de teste proprio: custo sem ganho |
+
+## Parsing e indexacao
+
+| Area | Escolha | Motivo |
+| --- | --- | --- |
+| Parser | tree-sitter (lib C) | Incremental, tolerante a erro, bindings C natural; usado para indexacao e poda de AST |
+| Linguagens iniciais | C, C++, Rust, Go, TypeScript, Python | Gramaticas estaveis e cobrem o proprio repo |
+| Busca textual | ripgrep como biblioteca (`lib ripgrep`/regex automato) ou implementacao propria com RE2 | Evitar processos externos em cada busca |
+
+RE2 e preferivel a std::regex: std::regex tem complexidade exponencial em padroes patologicos. Se regex literais simples bastarem, usar `string_view::find` e hashed n-gram.
+
+## Persistencia e serializedacao
+
+| Area | Escolha | Motivo |
+| --- | --- | --- |
+| Banco primario | PostgreSQL (libpq) | Fonte de verdade: sessoes, mensagens, indice, historico de custo. Transacoes e JSONB |
+| Cache/fila | Redis (hiredis) | Cache quente de contexto, fila de jobs, locks distribuidos, rate limit |
+| Payload | JSONB no Postgres; JSON em disco para export | Formato unico de troca, legivel e compativel com o upstream |
+| JSON | simdjson (parse) + glue code proprio (write) | Parse rapido com validacao de schema explicita |
+| Schema | structs C++ com validacao manual nos limites; sem gerador de codigo na fase 1 | Menos movimento de build; gerador entra se os schemas estabilizarem |
+| Cache de tokens | Redis com hash do prompt + chave por provider/modelo | Reutiliza prefixo cacheavel do provider e expira por TTL |
+
+SQLite sai do projeto. A referencia ao banco do upstream serve apenas para entendimento do formato de mensagens, nao para reuso de codigo.
+
+## Rede e I/O
+
+| Area | Escolha | Motivo |
+| --- | --- | --- |
+| HTTP/WS client | libcurl + WebSocket (libwebsockets ou curl WS) | Suporte multi-plataforma, proxy e TLS consolidados |
+| HTTP server | cpp-httplib ou Boost.Beast | Serve API e HTML/CSS estatico; SSE para stream de eventos. Beast se WS for necessario |
+| TLS | OpenSSL ou BoringSSL via libcurl | Nao implementar cripto propria |
+| Async | io_uring no Linux (opcional), epoll/kqueue/IOCP por plataforma | Abstracao de event loop unica com backend por SO |
+
+Decisao pendente: comecar com blocking I/O + thread pool e introduzir coroutines apenas onde a latencia de stream importar. Isso reduz risco de bugs de lifetime no inicio.
+
+## Concorrencia e memoria
+
+| Area | Escolha | Motivo |
+| --- | --- | --- |
+| Threads | `std::jthread` + fila MPMC lock-free (Vyukov) | Orquestracao multi-agente com custo conhecido |
+| Sincronizacao | mutex/condition_variable por padrao; lock-free so em measurement-proven hotspots | Correcao antes de performance |
+| Shared memory | POSIX shm / Win32 file mapping para cache de indice entre processos | Zero-copy entre daemon e CLI |
+| Alocadores | arena por request, pool por sessao, PMR (`std::pmr::monotonic_buffer_resource`) | Libera tudo de uma vez no fim do request, sem GC |
+
+Shared memory entre processos e uma feature do milestone 3. A fase 1 usa memoria de processo com estruturas compartilhadas entre threads. Isso evita complexidade de serializacao antes de existir uma medida de latencia que a justifique.
+
+## Compressao de prompt
+
+| Area | Escolha | Motivo |
+| --- | --- | --- |
+| AST pruning | tree-sitter queries com pesos por no | Remove código irrelevante mantendo assinaturas e imports |
+| Sumarizacao | chamada ao proprio provider com modelo pequeno (mesma ideia de compaction do upstream) | Evita modelo local adicional |
+| Similaridade | embeddings do provider + busca vetorial local (simples, HNSW so se volume justificar) | Contexto relevante por recencia e similaridade |
+| Tokenizacao | contador aproximado local + contagem real do provider quando disponivel | Nao inventar tokenizer proprio |
+| Compressao vetorial | modulo opcional via llama.cpp/vLLM com LoRA proprio | 500xCompressor existe mas os pesos nao sao publicos; ver `docs/06-compressao-vetorial.md` |
+| Simulacao 3D | Bullet Physics (zlib), Jolt como alternativa | C++, maduro, suficiente para testes de fisica |
+
+## Observabilidade
+
+- Logs estruturados em JSON lines, sem PII/tokens.
+- Metricas Prometheus ou OpenTelemetry exportaveis via HTTP.
+- `tracy` em builds de debug para profiling de alloc e locks.
+
+## Licencas
+
+- OpenCode original: MIT.
+- tree-sitter: MIT.
+- libcurl: MIT-like (curl license).
+- simdjson: Apache-2.0.
+- GoogleTest: BSD-3.
+- libpq (PostgreSQL): PostgreSQL License.
+- hiredis: BSD-3.
+
+Verificar licencas de cada dependencia antes de incluir no build final. Nenhuma dependencia AGPL entra no produto.
+
+## Interface
+
+| Area | Escolha | Motivo |
+| --- | --- | --- |
+| Markup | HTML semantico | Sem JavaScript; forms para acoes, SSE para atualizacoes |
+| Estilo | CSS puro com custom properties | Tokens de cor/espaco/tipo em um unico arquivo, sem framework |
+| Renderizacao | server-side em C++ | Gera HTML escapado no daemon; estado vem do Postgres/Redis |
+| Atualizacao | Server-Sent Events | Stream de `message.delta` e eventos de tool sem WebSocket nem JS |
+
+Nenhum bundler, transpilador ou runtime de JS entra no build. Isso e uma restricao do projeto, nao uma preferencia.
