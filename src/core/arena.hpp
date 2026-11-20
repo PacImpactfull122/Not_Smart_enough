@@ -13,7 +13,7 @@ class Arena {
  public:
   explicit Arena(std::size_t block_size = 64 * 1024) : resource_(block_size) {}
 
-  Arena(const Arena&) = delete;a
+  Arena(const Arena&) = delete;
   Arena& operator=(const Arena&) = delete;
 
   std::pmr::memory_resource* resource() noexcept { return &resource_; }
