@@ -42,6 +42,7 @@ class Arena {
 
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
       if (bytes == 0) bytes = 1;
+      if (alignment < alignof(std::max_align_t)) alignment = alignof(std::max_align_t);
       if (blocks_.empty()) add_block(bytes, alignment);
 
       for (;;) {
