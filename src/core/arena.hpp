@@ -53,9 +53,6 @@ class Arena {
         if (aligned != nullptr) {
           std::size_t padding = static_cast<std::byte*>(aligned) -
                                 static_cast<std::byte*>(start);
-          if (padding > std::numeric_limits<std::size_t>::max() - bytes) {
-            throw std::overflow_error("arena allocation size overflow");
-          }
           std::size_t consumed = padding + bytes;
           if (consumed > std::numeric_limits<std::size_t>::max() - total_used_) {
             throw std::overflow_error("arena total usage overflow");
