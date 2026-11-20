@@ -8,5 +8,6 @@ documentation/
 tests/
 .codex/
 .mcp.json
+.gitignore
 *.md
 !README.md
