@@ -1,0 +1,94 @@
+# Grafo de conhecimento ("cerebro com nodes")
+
+Subsistema que guarda entidades e relacoes da sessao como grafo persistente, permitindo ao agente navegar contexto por conexao em vez de apenas por texto.
+
+## Modelo de ameaca em 3 linhas
+
+- **Ativos**: conhecimento derivado do repo, memorias da sessao, relacoes entre simbolos.
+- **Fronteira**: conteudo gerado pelo modelo e nao-confiavel; simbolos vem de codigo nao-confiavel.
+- **Atacante plausivel**: prompt injection que cria nos falsos para influenciar respostas futuras.
+
+## Escolha: Postgres com tabelas `node` e `edge`
+
+Motivo: ja e a fonte de verdade do projeto, tem JSONB e transacoes. Evita um quinto servico (Neo4j). Se a traversia ficar lenta ou precisar de Cypher, migrar depois com export.
+
+```sql
+node(
+  id           bigserial primary key,
+  session_id   uuid not null,
+  kind         text not null,      -- file | symbol | decision | test | note | sandbox_result
+  key          text not null,      -- chave estavel dentro da sessao
+  payload      jsonb not null,      -- inclui acceptance: condicao de aceite
+  embedding    bytea,              -- opcional, vetor binario
+  source_seq   bigint,             -- mensagem de origem
+  confidence   real not null default 1,
+  created_at   timestamptz not null,
+  unique(session_id, kind, key)
+)
+
+edge(
+  src_id       bigint references node(id),
+  dst_id       bigint references node(id),
+  relation     text not null,      -- defines | calls | imports | derives_from | refutes | depends_on | contributes_to
+  weight       real not null default 1,
+  source_seq   bigint,
+  primary key(src_id, dst_id, relation)
+)
+```
+
+Indices: `(session_id, kind, key)`, `edge(src_id)`, `edge(dst_id)`, GIN em `payload`.
+
+## Regras
+
+1. **Proveniencia obrigatoria**: todo no carrega `source_seq`. No sem origem e recusado.
+2. **Append-only**: correcoes criam novo no com `key` versionada; o antigo recebe edge `refutes`.
+3. **Confianca**: nos derivados de output de ferramenta ou inferencia do modelo comecam com confianca menor que nos derivados de codigo analisado por tree-sitter.
+4. **Limites**: maximo de nos por sessao e de profundidade de traversia, para evitar explosion.
+5. **Validacao de chave**: `key` segue allowlist por `kind`; nunca interpola entrada do modelo em SQL — usar parametrizacao sempre.
+
+## Consultas tipicas
+
+- simbolos que chamam um dado simbolo: `edge where dst_id = ? and relation = 'calls'`
+- decisoes que derivam de um teste: traversia `derives_from`
+- contexto relevante para um prompt: nos com `embedding` proximo + nos a 1-2 saltos dos nos do arquivo atual
+
+## Ferramentas expostas
+
+| Ferramenta | Entrada | Saida |
+| --- | --- | --- |
+| `graph.upsert` | kind, key, payload, source_seq | no criado ou existente |
+| `graph.link` | src, dst, relation, weight | edge criada |
+| `graph.neighbors` | no, relation, depth | lista de nos |
+| `graph.search` | termo ou vetor, limite | nos ranqueados |
+| `graph.forget` | no alvo, `source_seq` | replay seletivo ate o ponto de injecao |
+
+### graph.forget e replay seletivo
+
+Paper `Forgetting Without Restarting` (arXiv `2609.04875`) prova que apagar apenas o registro plaintext de memoria **nao** remove artefatos derivados: resumos, plano de ferramentas e KV cache permanecem. Instruction-based forgetting falha sob elicitation com `Leak@probes = 1.00`. O paper propoe Provenance-Guided Selective Replay e atinge esquecimento exato com ate 9x menos tokens recomputados que um reset completo.
+
+Implementacao:
+
+1. `source_seq` localiza o ponto de injecao;
+2. checkpoint restaura o prefixo anterior a ele (o paper prova que esse prefixo e compartilhado "de graca" com o mundo contrafactual);
+3. sanitizacao remove o no e todos os nos que dele derivam por `derives_from`;
+4. replay regenera o sufixo a partir do checkpoint;
+5. invalida entradas de `ContextCache` no Redis que contenham o hash do no removido.
+
+Sem o passo 4, `refutes` so registra a correcao — o modelo ainda pode agir como se tivesse visto a informacao revogada.
+
+### Contribuicoes (Dittany)
+
+Paper `Dittany` (arXiv `2610.42144`) usa um grafo de contribuicoes com condicoes de aceite para reparar execucoes multi-agente: 88.28% precision / 79.18% recall na deteccao de falhas e +26.74 pontos de acuracia. Nosso `payload.acceptance` e a edge `contributes_to` cumprem esse papel: quando uma acao falha, o grafo diz quais resultados ainda sao reutilizaveis e quais precisam ser refeitos.
+
+O snapshot de tools segue permissao efetiva. Agentes `plan` recebem `graph.neighbors` e `graph.search`, nao escrita.
+
+## Integracao com contexto
+
+O grafo alimenta a secao `I` e `W` da DSL compacta (`docs/02-contexto.md`): nos viram IDs internos e referencias por hash, nunca texto longo repetido.
+
+## Verificacao
+
+- teste de que todo no tem `source_seq` valido;
+- teste de que `graph.upsert` nao permite SQL injection via `key`;
+- teste de que traversia com depth 5 termina em tempo limitado;
+- teste de que edge `refutes` mantem o no antigo intacto.
