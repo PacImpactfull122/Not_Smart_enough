@@ -1,0 +1,14 @@
+#!/bin/sh
+# Impede que qualquer .md entre em commit, exceto o README.md da raiz.
+# O .gitignore cobre arquivos nao rastreados; este hook cobre add -f e arquivos ja rastreados.
+
+bad=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.md$' | grep -v '^README.md$')
+
+if [ -n "$bad" ]; then
+  echo "commit recusado: arquivos markdown nao sao versionados neste repositorio:" >&2
+  echo "$bad" >&2
+  echo "apenas README.md e permitido." >&2
+  exit 1
+fi
+
+exit 0
