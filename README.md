@@ -1,1 +1,1 @@
-# Rewrite-Opencode
+Not intelligent enough
