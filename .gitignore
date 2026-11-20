@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+*.so
+__cmake_systeminformation/
+
+documentation/
+tests/
+*.md
+!README.md
